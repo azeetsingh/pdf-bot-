@@ -25,7 +25,17 @@ def get_model_name():
             return st.secrets["GEMINI_MODEL"]
     except Exception:
         pass
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    return os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+
+
+def ask_gemini(client, model, prompt):
+    """Use the Interactions API (recommended); fall back to generate_content."""
+    try:
+        interaction = client.interactions.create(model=model, input=prompt)
+        return interaction.output_text
+    except AttributeError:
+        response = client.models.generate_content(model=model, contents=prompt)
+        return response.text
 
 
 API_KEY = get_api_key()
@@ -111,8 +121,7 @@ Context:
 
 Question: {user_query}
 Answer:"""
-                response = client.models.generate_content(model=MODEL, contents=prompt)
-                answer = response.text or "I could not generate an answer."
+                answer = ask_gemini(client, MODEL, prompt) or "I could not generate an answer."
             except Exception as e:
                 answer = None
                 st.error(f"Error calling AI engine: {e}")
