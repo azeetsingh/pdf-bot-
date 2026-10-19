@@ -1,5 +1,7 @@
 import io
 import os
+import time
+
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -8,6 +10,10 @@ from pypdf import PdfReader
 
 # --- 1. Page config ---
 st.set_page_config(page_title="PDF Chat AI Agent", page_icon="🤖", layout="wide")
+
+# Models tried in order when the main one is overloaded (503) or rate limited (429)
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+MAX_PDF_CHARS = 60000  # keeps prompts small so calls stay fast
 
 
 # --- 2. Credentials (never hardcode keys) ---
@@ -26,47 +32,59 @@ def get_model_name():
             return st.secrets["GEMINI_MODEL"]
     except Exception:
         pass
-    return os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
-def ask_gemini(client, model, prompt):
-    """Use the official generate_content method directly."""
-    try:
-        response = client.models.generate_content(model=model, contents=prompt)
-        return response.text
-    except Exception as e:
-        return f"Error in fallback generation: {e}"
+# --- 3. Gemini calls with retry + fallback ---
+def is_temporary_error(e: Exception) -> bool:
+    msg = str(e)
+    return any(code in msg for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "500", "504", "DEADLINE"))
 
+
+def generate_with_retry(client, model, prompt, use_search=False):
+    """Try the main model, then fallback models. Retries temporary errors."""
+    models_to_try = [model] + [m for m in FALLBACK_MODELS if m != model]
+    config = None
+    if use_search:
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
+
+    last_error = None
+    for m in models_to_try:
+        for attempt in range(3):
+            try:
+                return client.models.generate_content(
+                    model=m, contents=prompt, config=config
+                )
+            except Exception as e:
+                last_error = e
+                if is_temporary_error(e):
+                    time.sleep(2 * (attempt + 1))  # wait 2s, 4s, 6s
+                    continue
+                break  # other error (e.g. 404 bad model name): go to next model
+    raise last_error
 
 
 def ask_agent(client, model, prompt):
-    """Olivia's brain: Gemini with Google Search. The model decides by itself
-    when a web search is needed. Returns (answer_text, sources).
-    If search is unavailable, falls back to a normal answer without it."""
+    """Gemini with Google Search. If search fails, answer without it.
+    Returns (answer_text, sources)."""
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())]
-            ),
-        )
-        sources = []
-        try:
-            metadata = response.candidates[0].grounding_metadata
-            for chunk in (metadata.grounding_chunks or []):
-                web = getattr(chunk, "web", None)
-                if web and web.uri and all(web.uri != s["url"] for s in sources):
-                    sources.append({"title": web.title or web.uri, "url": web.uri})
-        except Exception:
-            pass
-        text = response.text
-        if text:
-            return text, sources
+        response = generate_with_retry(client, model, prompt, use_search=True)
+    except Exception:
+        response = generate_with_retry(client, model, prompt, use_search=False)
+
+    sources = []
+    try:
+        metadata = response.candidates[0].grounding_metadata
+        for chunk in (metadata.grounding_chunks or []):
+            web = getattr(chunk, "web", None)
+            if web and web.uri and all(web.uri != s["url"] for s in sources):
+                sources.append({"title": web.title or web.uri, "url": web.uri})
     except Exception:
         pass
-    # Fallback: no web search
-    return ask_gemini(client, model, prompt), []
+
+    return response.text, sources
 
 
 def show_sources(sources):
@@ -79,7 +97,7 @@ def show_sources(sources):
 API_KEY = get_api_key()
 MODEL = get_model_name()
 
-# --- 3. Sidebar ---
+# --- 4. Sidebar ---
 st.sidebar.title("📁 Document Panel")
 st.sidebar.write("Upload your document here to start chatting with it.")
 uploaded_file = st.sidebar.file_uploader("Choose a PDF file", type=["pdf"])
@@ -99,7 +117,7 @@ if st.sidebar.button("🗑️ Clear chat"):
     st.rerun()
 
 
-# --- 4. PDF text extraction ---
+# --- 5. PDF text extraction ---
 @st.cache_data(show_spinner="Reading text from PDF...")
 def extract_text(file_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(file_bytes))
@@ -111,7 +129,7 @@ def extract_text(file_bytes: bytes) -> str:
     return "\n".join(parts)
 
 
-# --- 5. Main UI ---
+# --- 6. Main UI ---
 st.title("💬 Olivia — AI Agent")
 st.write(
     "Chat with Olivia about anything. She can search the web for live information, "
@@ -132,6 +150,11 @@ if uploaded_file is not None:
     document_context = extract_text(uploaded_file.getvalue())
     if document_context.strip():
         st.sidebar.success(f"Processed: {uploaded_file.name}")
+        if len(document_context) > MAX_PDF_CHARS:
+            st.sidebar.info(
+                f"Large PDF: only the first {MAX_PDF_CHARS:,} characters are used."
+            )
+            document_context = document_context[:MAX_PDF_CHARS]
     else:
         st.sidebar.warning(
             "No text could be extracted from this PDF (it may be a scanned image). "
@@ -203,34 +226,32 @@ placeholder = (
 if user_query := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(user_query)
-        
+
     with st.chat_message("assistant"):
+        answer = None
         sources = []
         with st.spinner("Olivia is thinking..."):
             try:
-                client = genai.Client(api_key=API_KEY)
-                # Ensure we pass the fully built prompt
+                client = genai.Client(
+                    api_key=API_KEY,
+                    http_options=types.HttpOptions(timeout=60000),  # 60 seconds
+                )
                 full_prompt = build_prompt(user_query)
                 answer, sources = ask_agent(client, MODEL, full_prompt)
-                
                 if not answer:
                     answer = "Sorry, I couldn't generate a reply. Please try again."
             except Exception as e:
-                answer = None
-                st.error(f"Error calling AI engine: {e}")
-                
+                st.error(
+                    "Google's AI service is busy or returned an error. "
+                    f"Please try again in a minute.\n\nDetails: {e}"
+                )
+
         if answer:
             st.markdown(answer)
             show_sources(sources)
-            
-            # Save both turns to history
+
+            # Save both turns to history (only once)
             st.session_state.messages.append({"role": "user", "content": user_query})
-            st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
-
-
-    # Save both turns only after the prompt was built (history excludes the current query)
-    st.session_state.messages.append({"role": "user", "content": user_query})
-    if answer:
-        st.session_state.messages.append(
-            {"role": "assistant", "content": answer, "sources": sources}
-        )
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer, "sources": sources}
+            )
