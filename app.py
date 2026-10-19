@@ -1,32 +1,30 @@
-
-# App · PY
 import io
 import os
 import time
- 
+
 import streamlit as st
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
- 
- 
+
+
 # --- 1. Page config ---
 st.set_page_config(page_title="PDF Chat AI Agent", page_icon="🤖", layout="wide")
- 
+
 # Backup models, tried in order if the main one is overloaded or unavailable
 FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 MAX_PDF_CHARS = 40000       # smaller prompt = faster answers
 CALL_TIMEOUT_MS = 30000     # one request may take at most 30 seconds
 TOTAL_TIMEOUT_S = 60        # give up after 60 seconds in total
- 
+
 # Words that suggest the question needs live web information
 SEARCH_HINTS = (
     "latest", "news", "today", "current", "now", "price", "weather", "score",
     "stock", "who is", "who won", "trending", "recent", "release", "update",
     "2025", "2026", "search", "google", "online", "web",
 )
- 
- 
+
+
 # --- 2. Credentials (never hardcode keys) ---
 def get_api_key():
     try:
@@ -35,8 +33,8 @@ def get_api_key():
     except Exception:
         pass
     return os.environ.get("GEMINI_API_KEY")
- 
- 
+
+
 def get_model_name():
     try:
         if "GEMINI_MODEL" in st.secrets:
@@ -44,29 +42,29 @@ def get_model_name():
     except Exception:
         pass
     return os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
- 
- 
+
+
 # --- 3. Fast streaming answer: text appears as soon as Gemini starts writing ---
 def needs_search(query: str, always: bool) -> bool:
     if always:
         return True
     q = query.lower()
     return any(hint in q for hint in SEARCH_HINTS)
- 
- 
+
+
 def stream_answer(client, model, prompt, use_search, sources_out, status):
     """Yields text pieces as they arrive. Falls back to other models if a model
     fails before sending any text. Fills sources_out with web sources."""
     deadline = time.time() + TOTAL_TIMEOUT_S
     models = [model] + [m for m in FALLBACK_MODELS if m != model]
     errors = []
- 
+
     # Search only on the main model; backups answer without search (faster, safer)
     plans = []
     if use_search:
         plans.append((models[0], True))
     plans.extend((m, False) for m in models)
- 
+
     for m, with_search in plans:
         if time.time() > deadline:
             errors.append("Stopped: took too long")
@@ -92,7 +90,7 @@ def stream_answer(client, model, prompt, use_search, sources_out, status):
                 if chunk.text:
                     started = True
                     yield chunk.text
- 
+
             if last_metadata:
                 for c in (last_metadata.grounding_chunks or []):
                     web = getattr(c, "web", None)
@@ -106,20 +104,20 @@ def stream_answer(client, model, prompt, use_search, sources_out, status):
             if started:
                 return  # part of the answer is already shown; keep it
             continue
- 
+
     raise RuntimeError(" | ".join(errors[-4:]))
- 
- 
+
+
 def show_sources(sources):
     if sources:
         with st.expander(f"🔎 Web sources ({len(sources)})"):
             for s in sources:
                 st.markdown(f"- [{s['title']}]({s['url']})")
- 
- 
+
+
 API_KEY = get_api_key()
 MODEL = get_model_name()
- 
+
 # --- 4. Sidebar ---
 st.sidebar.title("📁 Document Panel")
 st.sidebar.write("Upload your document here to start chatting with it.")
@@ -129,22 +127,22 @@ always_search = st.sidebar.checkbox(
     value=False,
     help="Off: Olivia searches the web only when your question needs live information.",
 )
- 
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "last_uploaded_file" not in st.session_state:
     st.session_state.last_uploaded_file = None
- 
+
 # Reset chat when a new file is uploaded
 if uploaded_file and uploaded_file.name != st.session_state.last_uploaded_file:
     st.session_state.messages = []
     st.session_state.last_uploaded_file = uploaded_file.name
- 
+
 if st.sidebar.button("🗑️ Clear chat"):
     st.session_state.messages = []
     st.rerun()
- 
- 
+
+
 # --- 5. PDF text extraction ---
 @st.cache_data(show_spinner="Reading text from PDF...")
 def extract_text(file_bytes: bytes) -> str:
@@ -155,8 +153,8 @@ def extract_text(file_bytes: bytes) -> str:
         if text:
             parts.append(text)
     return "\n".join(parts)
- 
- 
+
+
 # --- 6. Main UI ---
 st.title("💬 Olivia — AI Agent")
 st.write(
@@ -164,14 +162,14 @@ st.write(
     "and answer questions about a PDF you upload in the sidebar."
 )
 st.markdown("---")
- 
+
 if not API_KEY:
     st.error(
         "GEMINI_API_KEY is not set. Add it in Streamlit Cloud → App settings → "
         "Secrets (or in `.streamlit/secrets.toml` when running locally)."
     )
     st.stop()
- 
+
 # PDF is optional: the bot works as a normal assistant without it.
 document_context = ""
 if uploaded_file is not None:
@@ -188,10 +186,10 @@ if uploaded_file is not None:
             "No text could be extracted from this PDF (it may be a scanned image). "
             "I can still chat, but I can't read this document."
         )
- 
+
 SYSTEM_INSTRUCTIONS = """You are Olivia, a friendly and capable AI agent inside a chat app.
 You can search the web for current information and you can read an uploaded PDF.
- 
+
 How to behave:
 - Introduce yourself as Olivia when greeting someone for the first time.
 - Greetings and small talk ("hi", "hello", "how are you", "thanks"): reply warmly and briefly, \
@@ -204,30 +202,30 @@ help you can.
 - If the user asks about "the PDF" or "the document" but no document is provided, kindly ask \
 them to upload a PDF using the sidebar.
 - Keep answers clear and concise. Never leave the user without a reply."""
- 
- 
+
+
 def build_prompt(user_query: str) -> str:
     # Include the last few turns so follow-up questions make sense
     history = ""
     for m in st.session_state.messages[-6:]:
         who = "User" if m["role"] == "user" else "Assistant"
         history += f"{who}: {m['content']}\n"
- 
+
     if document_context.strip():
         doc_block = f"PDF context (from '{uploaded_file.name}'):\n{document_context}"
     else:
         doc_block = "PDF context: (no document uploaded)"
- 
+
     return f"""{SYSTEM_INSTRUCTIONS}
- 
+
 {doc_block}
- 
+
 Conversation so far:
 {history}
 User: {user_query}
 Assistant:"""
- 
- 
+
+
 if not st.session_state.messages:
     with st.chat_message("assistant"):
         st.markdown(
@@ -235,22 +233,22 @@ if not st.session_state.messages:
             "web for live info, or upload a PDF in the sidebar and I'll answer "
             "questions about it."
         )
- 
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         show_sources(message.get("sources"))
- 
+
 placeholder = (
     "Ask something about your PDF or anything else..."
     if document_context.strip()
     else "Say hi or ask me anything..."
 )
- 
+
 if user_query := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(user_query)
- 
+
     with st.chat_message("assistant"):
         answer = None
         sources = []
@@ -274,14 +272,12 @@ if user_query := st.chat_input(placeholder):
                 f"Please try again in a minute.\n\nDetails: {e}"
             )
         status_box.empty()
- 
+
         if answer:
             show_sources(sources)
- 
+
             # Save both turns to history (only once)
             st.session_state.messages.append({"role": "user", "content": user_query})
             st.session_state.messages.append(
                 {"role": "assistant", "content": answer, "sources": sources}
             )
- 
-Claude finished the response
