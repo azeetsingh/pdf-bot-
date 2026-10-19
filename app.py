@@ -69,7 +69,7 @@ def stream_answer(client, model, prompt, use_search, sources_out, status):
         if time.time() > deadline:
             errors.append("Stopped: took too long")
             break
-        status(f"Asking {m}" + (" with web search..." if with_search else "..."))
+        status("🔎 Syna is searching the web..." if with_search else "Syna is thinking...")
         config = None
         if with_search:
             config = types.GenerateContentConfig(
@@ -125,7 +125,7 @@ uploaded_file = st.sidebar.file_uploader("Choose a PDF file", type=["pdf"])
 always_search = st.sidebar.checkbox(
     "🌐 Always use web search (slower)",
     value=False,
-    help="Off: Olivia searches the web only when your question needs live information.",
+    help="Off: Syna searches the web only when your question needs live information.",
 )
 
 if "messages" not in st.session_state:
@@ -156,9 +156,9 @@ def extract_text(file_bytes: bytes) -> str:
 
 
 # --- 6. Main UI ---
-st.title("💬 Olivia — AI Agent")
+st.title("💬 Syna — AI Agent")
 st.write(
-    "Chat with Olivia about anything. She can search the web for live information, "
+    "Chat with Syna about anything. She can search the web for live information, "
     "and answer questions about a PDF you upload in the sidebar."
 )
 st.markdown("---")
@@ -187,11 +187,11 @@ if uploaded_file is not None:
             "I can still chat, but I can't read this document."
         )
 
-SYSTEM_INSTRUCTIONS = """You are Olivia, a friendly and capable AI agent inside a chat app.
+SYSTEM_INSTRUCTIONS = """You are Syna, a friendly and capable AI agent inside a chat app.
 You can search the web for current information and you can read an uploaded PDF.
 
 How to behave:
-- Introduce yourself as Olivia when greeting someone for the first time.
+- Introduce yourself as Syna when greeting someone for the first time.
 - Greetings and small talk ("hi", "hello", "how are you", "thanks"): reply warmly and briefly, \
 and say what you can do (chat about anything and answer questions about an uploaded PDF).
 - General questions: answer them helpfully and clearly, even if no PDF is uploaded.
@@ -229,7 +229,7 @@ Assistant:"""
 if not st.session_state.messages:
     with st.chat_message("assistant"):
         st.markdown(
-            "👋 Hi! I'm **Olivia**, your AI agent. Ask me anything, I can search the "
+            "👋 Hi! I'm **Syna**, your AI agent. Ask me anything, I can search the "
             "web for live info, or upload a PDF in the sidebar and I'll answer "
             "questions about it."
         )
