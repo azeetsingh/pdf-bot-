@@ -1,10 +1,10 @@
 import io
 import os
-
 import streamlit as st
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
+
 
 # --- 1. Page config ---
 st.set_page_config(page_title="PDF Chat AI Agent", page_icon="🤖", layout="wide")
@@ -30,13 +30,13 @@ def get_model_name():
 
 
 def ask_gemini(client, model, prompt):
-    """Use the Interactions API (recommended); fall back to generate_content."""
+    """Use the official generate_content method directly."""
     try:
-        interaction = client.interactions.create(model=model, input=prompt)
-        return interaction.output_text
-    except AttributeError:
         response = client.models.generate_content(model=model, contents=prompt)
         return response.text
+    except Exception as e:
+        return f"Error in fallback generation: {e}"
+
 
 
 def ask_agent(client, model, prompt):
@@ -203,21 +203,30 @@ placeholder = (
 if user_query := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(user_query)
-
+        
     with st.chat_message("assistant"):
         sources = []
         with st.spinner("Olivia is thinking..."):
             try:
                 client = genai.Client(api_key=API_KEY)
-                answer, sources = ask_agent(client, MODEL, build_prompt(user_query))
-                answer = answer or "Sorry, I couldn't generate a reply. Please try again."
+                # Ensure we pass the fully built prompt
+                full_prompt = build_prompt(user_query)
+                answer, sources = ask_agent(client, MODEL, full_prompt)
+                
+                if not answer:
+                    answer = "Sorry, I couldn't generate a reply. Please try again."
             except Exception as e:
                 answer = None
                 st.error(f"Error calling AI engine: {e}")
-
+                
         if answer:
             st.markdown(answer)
             show_sources(sources)
+            
+            # Save both turns to history
+            st.session_state.messages.append({"role": "user", "content": user_query})
+            st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
+
 
     # Save both turns only after the prompt was built (history excludes the current query)
     st.session_state.messages.append({"role": "user", "content": user_query})
