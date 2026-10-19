@@ -12,7 +12,7 @@ from pypdf import PdfReader
 st.set_page_config(page_title="PDF Chat AI Agent", page_icon="🤖", layout="wide")
 
 # Models tried in order when the main one is overloaded (503) or rate limited (429)
-FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 MAX_PDF_CHARS = 60000  # keeps prompts small so calls stay fast
 
 
@@ -32,7 +32,7 @@ def get_model_name():
             return st.secrets["GEMINI_MODEL"]
     except Exception:
         pass
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    return os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 
 # --- 3. Gemini calls with retry + fallback ---
@@ -50,7 +50,7 @@ def generate_with_retry(client, model, prompt, use_search=False):
             tools=[types.Tool(google_search=types.GoogleSearch())]
         )
 
-    last_error = None
+    errors = []
     for m in models_to_try:
         for attempt in range(3):
             try:
@@ -58,12 +58,13 @@ def generate_with_retry(client, model, prompt, use_search=False):
                     model=m, contents=prompt, config=config
                 )
             except Exception as e:
-                last_error = e
+                errors.append(f"[{m}] {str(e)[:200]}")
                 if is_temporary_error(e):
                     time.sleep(2 * (attempt + 1))  # wait 2s, 4s, 6s
                     continue
                 break  # other error (e.g. 404 bad model name): go to next model
-    raise last_error
+    # Show every model's error, not just the last one
+    raise RuntimeError(" | ".join(errors[-4:]))
 
 
 def ask_agent(client, model, prompt):
